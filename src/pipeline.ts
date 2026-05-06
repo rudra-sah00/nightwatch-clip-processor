@@ -38,22 +38,24 @@ export async function processClip(clipId: string): Promise<PipelineResult> {
   const videoPath = join(workDir, "output.mp4");
   log.info({ clipId }, "Converting WebM → MP4");
 
-  // WebM chunks from MediaRecorder need the concat filter (not demuxer)
-  // to properly handle independent timestamps per segment.
+  // MediaRecorder chunks: only the first has the EBML/WebM header.
+  // Subsequent chunks are continuation data. Merge into one WebM first.
   const inputFiles = segmentKeys.map((key) => join(workDir, key.split("/").pop() ?? key));
-  const inputArgs = inputFiles.flatMap((f) => ["-i", f]);
-  const filterComplex = `concat=n=${inputFiles.length}:v=1:a=1[outv][outa]`;
+  const mergedWebm = join(workDir, "merged.webm");
+  const { createWriteStream, createReadStream } = await import("node:fs");
+  const { pipeline } = await import("node:stream/promises");
+  const ws = createWriteStream(mergedWebm);
+  for (const f of inputFiles) {
+    await pipeline(createReadStream(f), ws, { end: false });
+  }
+  ws.end();
+  await new Promise<void>((resolve) => ws.on("finish", resolve));
 
   await exec(
     "ffmpeg",
     [
-      ...inputArgs,
-      "-filter_complex",
-      filterComplex,
-      "-map",
-      "[outv]",
-      "-map",
-      "[outa]",
+      "-i",
+      mergedWebm,
       "-c:v",
       "libx264",
       "-preset",
