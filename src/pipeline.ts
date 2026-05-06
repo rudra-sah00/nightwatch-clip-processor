@@ -38,38 +38,34 @@ export async function processClip(clipId: string): Promise<PipelineResult> {
   const videoPath = join(workDir, "output.mp4");
   log.info({ clipId }, "Converting WebM → MP4");
 
-  // WebM chunks from MediaRecorder lack proper duration headers.
-  // Use concat demuxer with fflags +genpts to regenerate timestamps.
+  // WebM chunks from MediaRecorder need the concat filter (not demuxer)
+  // to properly handle independent timestamps per segment.
   const inputFiles = segmentKeys.map((key) => join(workDir, key.split("/").pop() ?? key));
-  const concatInput = `concat:${inputFiles.join("|")}`;
+  const inputArgs = inputFiles.flatMap((f) => ["-i", f]);
+  const filterComplex = `concat=n=${inputFiles.length}:v=1:a=1[outv][outa]`;
 
   await exec(
     "ffmpeg",
     [
-      "-f",
-      "concat",
-      "-safe",
-      "0",
-      "-fflags",
-      "+genpts",
-      "-i",
-      concatListPath,
+      ...inputArgs,
+      "-filter_complex",
+      filterComplex,
+      "-map",
+      "[outv]",
+      "-map",
+      "[outa]",
       "-c:v",
       "libx264",
       "-preset",
-      "medium",
+      "fast",
       "-crf",
       "18",
       "-pix_fmt",
       "yuv420p",
-      "-vsync",
-      "cfr",
       "-c:a",
       "aac",
       "-b:a",
       "192k",
-      "-af",
-      "aresample=async=1000",
       "-movflags",
       "+faststart",
       "-y",
