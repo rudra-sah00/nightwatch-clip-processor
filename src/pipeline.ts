@@ -37,15 +37,18 @@ export async function processClip(clipId: string): Promise<PipelineResult> {
 
   const videoPath = join(workDir, "output.mp4");
   log.info({ clipId }, "Converting WebM → MP4");
+
+  // WebM chunks from MediaRecorder lack proper duration headers.
+  // Use concat protocol (binary concatenation) instead of concat demuxer
+  // so FFmpeg reads them as a continuous WebM stream.
+  const inputFiles = segmentKeys.map((key) => join(workDir, key.split("/").pop() ?? key));
+  const concatInput = `concat:${inputFiles.join("|")}`;
+
   await exec(
     "ffmpeg",
     [
-      "-f",
-      "concat",
-      "-safe",
-      "0",
       "-i",
-      concatListPath,
+      concatInput,
       "-c:v",
       "libx264",
       "-preset",
