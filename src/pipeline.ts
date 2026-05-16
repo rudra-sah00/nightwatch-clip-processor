@@ -1,10 +1,11 @@
 import { execFile } from "node:child_process";
-import { createReadStream, createWriteStream, readdirSync } from "node:fs";
+import { createReadStream, createWriteStream } from "node:fs";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { pipeline } from "node:stream/promises";
 import { promisify } from "node:util";
 import { logger } from "./logger.js";
+import { minio } from "./minio.js";
 
 const exec = promisify(execFile);
 const log = logger.child({ module: "pipeline" });
@@ -19,20 +20,23 @@ export async function processClip(clipId: string): Promise<PipelineResult> {
   const workDir = join("/tmp/clips", `clip-${clipId}`);
   await mkdir(workDir, { recursive: true });
 
-  // Read segments from local disk (shared volume with backend)
-  const files = readdirSync(workDir)
-    .filter((f) => f.endsWith(".webm") || f.endsWith(".ts"))
-    .sort();
+  // Download segments from MinIO
+  const segmentKeys = await minio.listKeys(`clips/${clipId}/segments/`);
+  if (segmentKeys.length === 0) throw new Error("No recorded video found");
 
-  if (files.length === 0) throw new Error("No recorded video found");
+  log.info({ clipId, segments: segmentKeys.length }, "Downloading segments from MinIO");
 
-  log.info({ clipId, segments: files.length }, "Processing segments from disk");
+  for (const key of segmentKeys) {
+    const filename = key.split("/").pop() ?? key;
+    await minio.downloadToFile(key, join(workDir, filename));
+  }
 
-  // MediaRecorder chunks: merge into one WebM first
+  // Merge WebM chunks into single file
+  const inputFiles = segmentKeys.map((key) => join(workDir, key.split("/").pop() ?? key));
   const mergedWebm = join(workDir, "merged.webm");
   const ws = createWriteStream(mergedWebm);
-  for (const f of files) {
-    await pipeline(createReadStream(join(workDir, f)), ws, { end: false });
+  for (const f of inputFiles) {
+    await pipeline(createReadStream(f), ws, { end: false });
   }
   ws.end();
   await new Promise<void>((resolve) => ws.on("finish", resolve));
@@ -100,4 +104,5 @@ export async function processClip(clipId: string): Promise<PipelineResult> {
 
 export async function cleanup(clipId: string): Promise<void> {
   await rm(join("/tmp/clips", `clip-${clipId}`), { recursive: true, force: true }).catch(() => {});
+  await minio.deletePrefix(`clips/${clipId}/segments/`).catch(() => {});
 }
