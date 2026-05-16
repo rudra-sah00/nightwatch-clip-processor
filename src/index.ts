@@ -4,9 +4,9 @@ import { existsSync, mkdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { promisify } from "node:util";
 import { Queue, Worker } from "bullmq";
 import Redis from "ioredis";
+import { uploadThumbnail, uploadVideo } from "./cloudinary.js";
 import { updateClipStatus } from "./db.js";
 import { logger } from "./logger.js";
-import { minio } from "./minio.js";
 import { cleanup, processClip } from "./pipeline.js";
 
 const exec = promisify(execFile);
@@ -55,19 +55,16 @@ function startWorker() {
       try {
         const { videoPath, thumbnailPath, duration } = await processClip(clipId);
 
-        const videoKey = `clips/${userId}/${clipId}/video.mp4`;
-        const thumbKey = `clips/${userId}/${clipId}/thumbnail.jpg`;
-
         const [videoUrl, thumbnailUrl] = await Promise.all([
-          minio.upload(videoKey, videoPath, "video/mp4"),
-          minio.upload(thumbKey, thumbnailPath, "image/jpeg"),
+          uploadVideo(videoPath, userId, clipId),
+          uploadThumbnail(thumbnailPath, userId, clipId),
         ]);
 
         await updateClipStatus(clipId, "ready", {
           videoUrl,
           thumbnailUrl,
-          s3VideoKey: videoKey,
-          s3ThumbnailKey: thumbKey,
+          s3VideoKey: `clips/${userId}/${clipId}`,
+          s3ThumbnailKey: `clips/${userId}/${clipId}-thumb`,
           duration,
         });
 

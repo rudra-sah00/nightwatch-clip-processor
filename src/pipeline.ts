@@ -1,9 +1,10 @@
 import { execFile } from "node:child_process";
+import { createReadStream, createWriteStream, readdirSync } from "node:fs";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { pipeline } from "node:stream/promises";
 import { promisify } from "node:util";
 import { logger } from "./logger.js";
-import { minio } from "./minio.js";
 
 const exec = promisify(execFile);
 const log = logger.child({ module: "pipeline" });
@@ -18,38 +19,26 @@ export async function processClip(clipId: string): Promise<PipelineResult> {
   const workDir = join("/tmp/clips", `clip-${clipId}`);
   await mkdir(workDir, { recursive: true });
 
-  const segmentKeys = await minio.listKeys(`clips/${clipId}/segments/`);
-  if (segmentKeys.length === 0) throw new Error("No recorded video found");
+  // Read segments from local disk (shared volume with backend)
+  const files = readdirSync(workDir)
+    .filter((f) => f.endsWith(".webm") || f.endsWith(".ts"))
+    .sort();
 
-  log.info({ clipId, segments: segmentKeys.length }, "Downloading segments");
+  if (files.length === 0) throw new Error("No recorded video found");
 
-  for (const key of segmentKeys) {
-    const filename = key.split("/").pop() ?? key;
-    await minio.downloadToFile(key, join(workDir, filename));
-  }
+  log.info({ clipId, segments: files.length }, "Processing segments from disk");
 
-  const concatListPath = join(workDir, "concat.txt");
-  const entries = segmentKeys.map((key) => {
-    const filename = key.split("/").pop() ?? key;
-    return `file '${join(workDir, filename)}'`;
-  });
-  await writeFile(concatListPath, entries.join("\n"));
-
-  const videoPath = join(workDir, "output.mp4");
-  log.info({ clipId }, "Converting WebM → MP4");
-
-  // MediaRecorder chunks: only the first has the EBML/WebM header.
-  // Subsequent chunks are continuation data. Merge into one WebM first.
-  const inputFiles = segmentKeys.map((key) => join(workDir, key.split("/").pop() ?? key));
+  // MediaRecorder chunks: merge into one WebM first
   const mergedWebm = join(workDir, "merged.webm");
-  const { createWriteStream, createReadStream } = await import("node:fs");
-  const { pipeline } = await import("node:stream/promises");
   const ws = createWriteStream(mergedWebm);
-  for (const f of inputFiles) {
-    await pipeline(createReadStream(f), ws, { end: false });
+  for (const f of files) {
+    await pipeline(createReadStream(join(workDir, f)), ws, { end: false });
   }
   ws.end();
   await new Promise<void>((resolve) => ws.on("finish", resolve));
+
+  const videoPath = join(workDir, "output.mp4");
+  log.info({ clipId }, "Converting WebM → MP4");
 
   await exec(
     "ffmpeg",
@@ -111,5 +100,4 @@ export async function processClip(clipId: string): Promise<PipelineResult> {
 
 export async function cleanup(clipId: string): Promise<void> {
   await rm(join("/tmp/clips", `clip-${clipId}`), { recursive: true, force: true }).catch(() => {});
-  await minio.deletePrefix(`clips/${clipId}/segments/`).catch(() => {});
 }
