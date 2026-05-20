@@ -31,43 +31,100 @@ export async function processClip(clipId: string): Promise<PipelineResult> {
     await storage.downloadToFile(key, join(workDir, filename));
   }
 
-  // Merge WebM chunks into single file
-  const inputFiles = segmentKeys.map((key) => join(workDir, key.split("/").pop() ?? key));
-  const mergedWebm = join(workDir, "merged.webm");
-  const ws = createWriteStream(mergedWebm);
-  for (const f of inputFiles) {
-    await pipeline(createReadStream(f), ws, { end: false });
-  }
-  ws.end();
-  await new Promise<void>((resolve) => ws.on("finish", resolve));
+  // Detect segment type from first file
+  const firstFile = segmentKeys[0].split("/").pop() ?? "";
+  const isTs = firstFile.endsWith(".ts");
+  const isM4s = firstFile.endsWith(".m4s");
+  const isFmp4 = isM4s || firstFile.endsWith(".mp4") || firstFile.endsWith(".m4a");
 
   const videoPath = join(workDir, "output.mp4");
-  log.info({ clipId }, "Converting WebM → MP4");
 
-  await exec(
-    "ffmpeg",
-    [
-      "-i",
-      mergedWebm,
-      "-c:v",
-      "libx264",
-      "-preset",
-      "fast",
-      "-crf",
-      "18",
-      "-pix_fmt",
-      "yuv420p",
-      "-c:a",
-      "aac",
-      "-b:a",
-      "192k",
-      "-movflags",
-      "+faststart",
-      "-y",
-      videoPath,
-    ],
-    { timeout: 300_000 },
-  );
+  if (isTs || isFmp4) {
+    // TS or fMP4 segments: use ffmpeg concat demuxer
+    const concatList = join(workDir, "concat.txt");
+    const inputFiles = segmentKeys
+      .filter((key) => {
+        const name = key.split("/").pop() ?? "";
+        // Skip init segment from concat list — it's referenced via EXT-X-MAP
+        return !name.startsWith("init.");
+      })
+      .map((key) => join(workDir, key.split("/").pop() ?? key));
+
+    // For fMP4: prepend init segment if it exists
+    const initFile = segmentKeys.find((k) => (k.split("/").pop() ?? "").startsWith("init."));
+    const allFiles = initFile
+      ? [join(workDir, initFile.split("/").pop() ?? ""), ...inputFiles]
+      : inputFiles;
+
+    const listContent = allFiles.map((f) => `file '${f}'`).join("\n");
+    await writeFile(concatList, listContent);
+
+    log.info({ clipId, format: isTs ? "ts" : "fmp4" }, "Concatenating segments → MP4");
+    await exec(
+      "ffmpeg",
+      [
+        "-f",
+        "concat",
+        "-safe",
+        "0",
+        "-i",
+        concatList,
+        "-c:v",
+        "libx264",
+        "-preset",
+        "fast",
+        "-crf",
+        "18",
+        "-pix_fmt",
+        "yuv420p",
+        "-c:a",
+        "aac",
+        "-b:a",
+        "192k",
+        "-movflags",
+        "+faststart",
+        "-y",
+        videoPath,
+      ],
+      { timeout: 300_000 },
+    );
+  } else {
+    // WebM segments: byte-concatenate then convert (legacy path)
+    const inputFiles = segmentKeys.map((key) => join(workDir, key.split("/").pop() ?? key));
+    const mergedWebm = join(workDir, "merged.webm");
+    const ws = createWriteStream(mergedWebm);
+    for (const f of inputFiles) {
+      await pipeline(createReadStream(f), ws, { end: false });
+    }
+    ws.end();
+    await new Promise<void>((resolve) => ws.on("finish", resolve));
+
+    log.info({ clipId }, "Converting WebM → MP4");
+    await exec(
+      "ffmpeg",
+      [
+        "-i",
+        mergedWebm,
+        "-c:v",
+        "libx264",
+        "-preset",
+        "fast",
+        "-crf",
+        "18",
+        "-pix_fmt",
+        "yuv420p",
+        "-c:a",
+        "aac",
+        "-b:a",
+        "192k",
+        "-movflags",
+        "+faststart",
+        "-y",
+        videoPath,
+      ],
+      { timeout: 300_000 },
+    );
+  }
 
   const { stdout: probeOut } = await exec("ffprobe", [
     "-v",
@@ -98,7 +155,10 @@ export async function processClip(clipId: string): Promise<PipelineResult> {
     { timeout: 30_000 },
   );
 
-  log.info({ clipId, duration }, "Pipeline complete");
+  log.info(
+    { clipId, duration, format: isTs ? "ts" : isFmp4 ? "fmp4" : "webm" },
+    "Pipeline complete",
+  );
   return { videoPath, thumbnailPath, duration };
 }
 

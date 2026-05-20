@@ -8,7 +8,11 @@ cloudinary.config({
   secure: true,
 });
 
-export async function uploadVideo(filePath: string, userId: string, clipId: string): Promise<string> {
+export async function uploadVideo(
+  filePath: string,
+  userId: string,
+  clipId: string,
+): Promise<string> {
   const result = await cloudinary.uploader.upload(filePath, {
     folder: `clips/${userId}`,
     public_id: clipId,
@@ -18,7 +22,11 @@ export async function uploadVideo(filePath: string, userId: string, clipId: stri
   return result.secure_url;
 }
 
-export async function uploadThumbnail(filePath: string, userId: string, clipId: string): Promise<string> {
+export async function uploadThumbnail(
+  filePath: string,
+  userId: string,
+  clipId: string,
+): Promise<string> {
   const result = await cloudinary.uploader.upload(filePath, {
     folder: `clips/${userId}`,
     public_id: `${clipId}-thumb`,
@@ -29,6 +37,10 @@ export async function uploadThumbnail(filePath: string, userId: string, clipId: 
 }
 
 export async function deleteClipAssets(userId: string, clipId: string): Promise<void> {
-  await cloudinary.uploader.destroy(`clips/${userId}/${clipId}`, { resource_type: "video" }).catch(() => {});
-  await cloudinary.uploader.destroy(`clips/${userId}/${clipId}-thumb`, { resource_type: "image" }).catch(() => {});
+  await cloudinary.uploader
+    .destroy(`clips/${userId}/${clipId}`, { resource_type: "video" })
+    .catch(() => {});
+  await cloudinary.uploader
+    .destroy(`clips/${userId}/${clipId}-thumb`, { resource_type: "image" })
+    .catch(() => {});
 }
