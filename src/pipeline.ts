@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { pipeline } from "node:stream/promises";
 import { promisify } from "node:util";
 import { logger } from "./logger.js";
-import { minio } from "./minio.js";
+import { storage } from "./storage.js";
 
 const exec = promisify(execFile);
 const log = logger.child({ module: "pipeline" });
@@ -20,15 +20,15 @@ export async function processClip(clipId: string): Promise<PipelineResult> {
   const workDir = join("/tmp/clips", `clip-${clipId}`);
   await mkdir(workDir, { recursive: true });
 
-  // Download segments from MinIO
-  const segmentKeys = await minio.listKeys(`clips/${clipId}/segments/`);
+  // Download segments from disk
+  const segmentKeys = await storage.listKeys(`clips/${clipId}/segments/`);
   if (segmentKeys.length === 0) throw new Error("No recorded video found");
 
-  log.info({ clipId, segments: segmentKeys.length }, "Downloading segments from MinIO");
+  log.info({ clipId, segments: segmentKeys.length }, "Downloading segments from disk");
 
   for (const key of segmentKeys) {
     const filename = key.split("/").pop() ?? key;
-    await minio.downloadToFile(key, join(workDir, filename));
+    await storage.downloadToFile(key, join(workDir, filename));
   }
 
   // Merge WebM chunks into single file
@@ -104,5 +104,5 @@ export async function processClip(clipId: string): Promise<PipelineResult> {
 
 export async function cleanup(clipId: string): Promise<void> {
   await rm(join("/tmp/clips", `clip-${clipId}`), { recursive: true, force: true }).catch(() => {});
-  await minio.deletePrefix(`clips/${clipId}/segments/`).catch(() => {});
+  await storage.deletePrefix(`clips/${clipId}/segments/`).catch(() => {});
 }
